@@ -1,17 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 — Stabilization
 
-Stabilization after the live acceptance test of 0.1.0 with Cobalt Cockpit v0.4.0. No setting, grant format or stored memory changes, and every result field that existed keeps its meaning.
+Stabilization after the live acceptance test of 0.1.0 with Cobalt Cockpit v0.4.0. Cockpit is unchanged and stays at v0.4.0. No setting, grant format or stored memory changes, and every result field that existed keeps its meaning.
 
 ### Fixed
 
-- **`inspect` now honours its `selector`.** In 0.1.0 `inspect` was an alias of `snapshot` and silently ignored the selector the tool schema accepts, so an inspection could not show that a named element exists. With a selector, the evidence keeps the page-level fields and adds `selector` and `element`: tag, type and rendered text of the first match, or `found: false`. A text input or textarea reports no text, so form values are still never returned, and a script, style, template, `noscript` or head element reports none either, so page-authored source is not returned. `inspect` without a selector (absent, null or empty), and `snapshot`, are unchanged. One difference from 0.1.0: an `inspect` selector longer than 256 characters, or one that is not a string, was ignored and is now refused.
+- **`inspect` now honours its `selector`.** In 0.1.0 `inspect` was an alias of `snapshot` and silently ignored the selector the tool schema accepts, so an inspection could not show that a named element exists. With a selector, the evidence keeps the page-level fields and adds `selector` and `element`: tag, type and rendered text of the first match, or `found: false`. A text input or textarea reports no text, so form values are still never returned, and a script, style, template, `noscript` or head element reports none either, so page-authored source is not returned. `inspect` without a selector (absent, null or empty), and `snapshot`, are unchanged. A string selector never fails a task, as in 0.1.0, which ignored it: one the engine cannot evaluate (a query syntax it does not implement) reports `found: null` and the task goes on. A selector that is not a string (a number, `false`, a list), which the tool's schema never allowed, is refused.
 - **Stopping the confined browser is documented, because the launch recipe did not stop cleanly.** Signalling `pasta` ended the wrapper and left the browser running: the outer `bwrap` is PID 1 of the namespace `pasta` creates and the kernel discards a `SIGTERM` sent to it from the host, and where SELinux confines `pasta` the `--die-with-parent` kill is denied. The README now says how to stop the browser and to confirm it has exited. The companion itself starts and stops no browser, so no code path was affected.
 
 ### Added
 
 - **`refusal_reason`.** A refused call keeps its general `error` code and, when one of the companion's own rules refused it, also names that rule from a fixed list (for example `provenance_required`, `document_scope_refused`, `grant_missing`, `navigation_refused_by_policy`). In 0.1.0 a missing grant, a destination outside the allowlist and a missing provenance field were indistinguishable. A reason never carries page text, a service answer or an exception message, and never says which entry of the private file decided. Receipts keep the same fixed name. A fill value that is empty, oversized or credential-shaped is now judged before any grant is consulted, so which rule refused says nothing about what is granted.
+
+- **An optional development harness**, `capabilities/tests/services.sh`, starts and stops the disposable loopback services a live test needs, from paths you give it, with its own tests. The plugin never runs it and nothing starts by itself. Its `stop` ends only the processes its own `start` recorded, found by recorded pid, start time and an environment token and never by name, and reports success only after each has been seen to exit.
+
+### Upgrading from 0.1.0
+
+- Nothing to change in settings, the private operator file or stored memory. Claude Code installs an update into a new folder, so if you use the browser, run `npm ci --ignore-scripts` again in the updated plugin's `capabilities` folder; until then browser tasks answer `browser_unavailable`.
 
 ### Verified live, unchanged
 

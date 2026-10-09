@@ -202,7 +202,9 @@ export async function executeBrowser(config = {}, args = {}, { connect, lookup =
       }
       // `inspect` may name one element to report on; with no selector (absent,
       // null or empty, as before) it is the page-level observation `snapshot` gives.
-      if (step.operation === 'inspect' && selects(step) && (typeof step.selector !== 'string' || step.selector.length > 256))
+      // Any string is taken, as 0.1.0 took any: it is only ever handed to the
+      // engine's element lookup, and the request size already bounds it.
+      if (step.operation === 'inspect' && selects(step) && typeof step.selector !== 'string')
         throw refuse('selector_refused', 'Inspect selector refused');
       if (step.operation === 'screenshot' && config.screenshot_retention !== 'ephemeral') throw refuse('screenshot_consent_required', 'Screenshot requires ephemeral evidence consent');
       if (step.operation === 'navigate' && typeof step.url !== 'string') throw refuse('navigation_url_required', 'Navigation URL required');
@@ -338,39 +340,50 @@ export async function executeBrowser(config = {}, args = {}, { connect, lookup =
             // as absent: that is an observation, not a failure. The selector is
             // an argument to fixed code, never code itself.
             if (step.operation === 'inspect' && selects(step)) {
-              // A selector the engine rejects, or a lost connection, is the
-              // engine's failure and is reported as one, with no rule named.
-              const target = await page.$(step.selector);
-              const found = target ? await target.evaluate(element => {
-                const tag = String(element.tagName ?? '');
-                let type = '';
-                try { type = String(element.getAttribute('type') ?? ''); } catch { type = ''; }
-                // Never a form value, and never page-authored source. A text
-                // control's text is what it holds. An element that is not
-                // rendered answers `innerText` with its raw content, so a
-                // script, style or template (or anything inside one, or the
-                // head) yields nothing, and a container holding one is read
-                // from a copy with those parts and any textarea removed.
-                // Anything this cannot establish yields no text at all.
-                const source = 'script,style,template,noscript,head';
-                let text = '';
-                try {
-                  if (tag !== 'INPUT' && tag !== 'TEXTAREA' && !element.closest(source)) {
-                    if (element.querySelector(source)) {
-                      const copy = element.cloneNode(true);
-                      for (const part of Array.from(copy.querySelectorAll(`${source},textarea`))) part.remove();
-                      text = String(copy.textContent ?? '');
-                    } else text = String(element.innerText ?? '');
-                  }
-                } catch { text = ''; }
-                return { tag, type, text: text.slice(0, 4000) };
-              }) : null;
-              // An element that is there but could not be described is not absent.
-              if (target && (!found || typeof found !== 'object')) throw new Error('Inspect evidence unusable');
-              evidence.selector = redact(step.selector);
-              evidence.element = found
-                ? { found: true, tag: redact(found.tag).slice(0, 32), type: redact(found.type).slice(0, 32), text: redact(found.text) }
-                : { found: false };
+              let element;
+              try {
+                const target = await page.$(step.selector);
+                const found = target ? await target.evaluate(node => {
+                  const tag = String(node.tagName ?? '');
+                  let type = '';
+                  try { type = String(node.getAttribute('type') ?? ''); } catch { type = ''; }
+                  // Never a form value, and never page-authored source. A text
+                  // control's text is what it holds. An element that is not
+                  // rendered answers `innerText` with its raw content, so a
+                  // script, style or template (or anything inside one, or the
+                  // head) yields nothing, and a container holding one is read
+                  // from a copy with those parts and any textarea removed.
+                  // Anything this cannot establish yields no text at all.
+                  const source = 'script,style,template,noscript,head';
+                  let text = '';
+                  try {
+                    if (tag !== 'INPUT' && tag !== 'TEXTAREA' && !node.closest(source)) {
+                      if (node.querySelector(source)) {
+                        const copy = node.cloneNode(true);
+                        for (const part of Array.from(copy.querySelectorAll(`${source},textarea`))) part.remove();
+                        text = String(copy.textContent ?? '');
+                      } else text = String(node.innerText ?? '');
+                    }
+                  } catch { text = ''; }
+                  return { tag, type, text: text.slice(0, 4000) };
+                }) : null;
+                // An element that is there but could not be described is not absent.
+                if (target && (!found || typeof found !== 'object')) throw new Error('Inspect evidence unusable');
+                element = found
+                  ? { found: true, tag: redact(found.tag).slice(0, 32), type: redact(found.type).slice(0, 32), text: redact(found.text) }
+                  : { found: false };
+              } catch (error) {
+                // 0.1.0 never looked the selector up, so a selector the engine
+                // cannot evaluate (a query syntax it does not implement, say)
+                // must not fail a task that used to succeed: the element is
+                // reported as unknown and the page-level fields stand. A task
+                // out of time, or a browser that has gone, still fails as such.
+                check();
+                if (error?.code === 'ECONNREFUSED' || /ECONNREFUSED|WebSocket/i.test(String(error?.message ?? ''))) throw error;
+                element = { found: null };
+              }
+              evidence.selector = redact(step.selector).slice(0, 256);
+              evidence.element = element;
             }
             break;
           }

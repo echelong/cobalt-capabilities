@@ -781,11 +781,12 @@ test('inspect reports a missing element as absent, not as a failure', async () =
   assert.deepEqual(result.results[1].evidence.element, { found: false });
 });
 
-test('an element that is there but cannot be described is a failure, never reported absent', async () => {
+test('an element that is there but cannot be described is unknown, never reported absent', async () => {
   const f = fixture({ fields: { '#result': { tagName: 'P', unreadable: true } } });
-  const result = await executeBrowser(config, { ...args, steps: [args.steps[0], { operation: 'inspect', selector: '#result' }] }, f);
-  assert.equal(result.status, 'error'); assert.equal(result.error, 'browser_policy_or_execution_error');
-  assert.equal('refusal_reason' in result, false); assert.deepEqual(result.results, []);
+  const result = await executeBrowser(config, { ...args, steps: [args.steps[0], { operation: 'inspect', selector: '#result' }, { operation: 'snapshot' }] }, f);
+  assert.equal(result.status, 'observed');
+  assert.deepEqual(result.results[1].evidence.element, { found: null });
+  assert.equal(result.results.length, 3);
 });
 
 test('inspect never returns what a text control holds', async () => {
@@ -824,20 +825,45 @@ test('inspect never returns page-authored source: scripts, styles, templates and
   assert.deepEqual(closed.results[1].evidence.element, { found: true, tag: 'P', type: '', text: '' });
 });
 
-test('a malformed inspect selector is refused before any connection; one the engine rejects is the engine\'s failure', async () => {
-  for (const selector of ['x'.repeat(257), 7, ['#a'], { id: 'a' }]) {
+test('inspect takes any string selector, as 0.1.0 did, and echoes a bounded part of it', async () => {
+  // 0.1.0 ignored the selector, so a long or odd one never failed a task.
+  const long = `#result${' '.repeat(600)}`;
+  const f = fixture({ fields: { [long]: null, 'a[': null } });
+  const result = await executeBrowser(config, { ...args, steps: [args.steps[0], { operation: 'inspect', selector: long }, { operation: 'inspect', selector: 'a[' }] }, f);
+  assert.equal(result.status, 'observed');
+  assert.equal(result.results[1].evidence.selector.length, 256); assert.deepEqual(result.results[1].evidence.element, { found: false });
+  assert.deepEqual(result.results[2].evidence.element, { found: false });
+});
+
+test('a selector that is not a string is refused before any connection; one the engine cannot evaluate does not fail the task', async () => {
+  for (const selector of [7, 0, false, ['#a'], { id: 'a' }, true]) {
     const f = fixture();
     const result = await executeBrowser(config, { ...args, steps: [args.steps[0], { operation: 'inspect', selector }] }, f);
     assert.equal(result.status, 'error', String(selector)); assert.equal(result.error, 'browser_policy_or_execution_error');
     assert.equal(result.refusal_reason, 'selector_refused'); assert.equal(f.state.connected, 0);
   }
-  // Whatever the engine throws for a selector it cannot evaluate is not one of
-  // this worker's rules: the general code, no reason, and none of its text.
-  const f = fixture({ fields: { '##': new Error('SyntaxError: private upstream text /private/path') } });
-  const result = await executeBrowser(config, { ...args, steps: [args.steps[0], { operation: 'inspect', selector: '##' }] }, f);
-  assert.equal(result.status, 'error'); assert.equal(result.error, 'browser_policy_or_execution_error'); assert.equal('refusal_reason' in result, false);
+  // 0.1.0 ignored the selector, so a string the engine cannot evaluate (a query
+  // syntax it does not implement) never failed a task. It still does not: the
+  // element is unknown, the page-level fields stand, later steps run, and none
+  // of the engine's text is returned.
+  const f = fixture({ fields: { 'aria/Greet': new Error('ProtocolError: private upstream text /private/path') } });
+  const result = await executeBrowser(config, { ...args, steps: [args.steps[0], { operation: 'inspect', selector: 'aria/Greet' }, { operation: 'snapshot' }] }, f);
+  assert.equal(result.status, 'observed'); assert.equal(result.results.length, 3);
+  assert.deepEqual(result.results[1].evidence.element, { found: null }); assert.equal(result.results[1].evidence.selector, 'aria/Greet');
+  assert.equal(result.results[1].evidence.title, 'fixture'); assert.equal(typeof result.results[1].evidence.text, 'string');
   assert.equal(JSON.stringify(result).includes('private'), false);
-  assert.deepEqual(result.operations_completed, ['navigate']); assert.equal(result.step_in_flight, 'inspect');
+  // A task that ran out of time during the lookup is a timeout, not an unknown element.
+  const slow = fixture({ fields: { '#slow': new Error('lookup failed late') } });
+  const page$ = slow.connect;
+  slow.connect = async () => { const browser = await page$(); const create = browser.createBrowserContext.bind(browser);
+    browser.createBrowserContext = async () => { const context = await create(); const newPage = context.newPage.bind(context);
+      context.newPage = async () => { const page = await newPage(); const find = page.$?.bind(page);
+        if (find) page.$ = async selector => { await new Promise(resolve => setTimeout(resolve, 700)); return find(selector); };
+        return page; };
+      return context; };
+    return browser; };
+  const late = await executeBrowser(config, { ...args, steps: [args.steps[0], { operation: 'inspect', selector: '#slow' }] }, slow);
+  assert.equal(late.status, 'error'); assert.equal(late.error, 'browser_timeout');
   // A connection lost during the lookup stays what it was in 0.1.0: unavailable.
   const lost = await executeBrowser(config, { ...args, steps: [args.steps[0], { operation: 'inspect', selector: '#result' }] },
     fixture({ fields: { '#result': new Error('WebSocket is not open: readyState 3') } }));

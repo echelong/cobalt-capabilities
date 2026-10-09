@@ -262,12 +262,17 @@ loads no destination. It cannot be combined with other steps.
 returns. With one, the evidence keeps those page-level fields and adds
 `selector` and `element`: `{"found": true, "tag": "P", "type": "", "text": "…"}`
 for the first element that matches, or `{"found": false}` when none does, which
-is an observation and not an error. `text` is the element's text as the engine
-renders it, bounded and redacted like page text. It is always empty for a text
-input or a textarea, because form values are never returned, and for a script,
-style, template, `noscript` or head element and anything inside one, because
-page-authored source is never returned. A selector longer than 256 characters is
-refused; an empty one counts as none. `snapshot` ignores a selector.
+is an observation and not an error. `{"found": null}` means the engine could not
+evaluate that selector (a query syntax it does not implement, for example): the
+element is unknown, the page-level fields are still returned and the task goes
+on. `text` is the element's own rendered text, bounded and redacted like page
+text. It is always empty for a text input or a textarea, because form values are
+never returned, and for a script, style, template, `noscript` or head element
+and anything inside one, because page-authored source is never returned. For an
+element that contains such parts (`body` always does) the text is read from a
+copy with them removed, so it can include text the page hides and its original
+whitespace, which `snapshot` leaves out. An empty selector counts as none.
+`snapshot` ignores a selector.
 
 `click` and `fill` need an exact grant in the private file, removed after use:
 
@@ -389,6 +394,7 @@ node --test capabilities/tests/test-egress.mjs
 node --test capabilities/tests/test-browser.mjs
 claude plugin validate --strict .
 python3 scripts/audit.py
+bash capabilities/tests/test-services.sh   # optional harness; Linux with pasta and bubblewrap
 
 # The host-hook tests run this plugin's hooks together with Cockpit's own, in
 # both load orders, so they need a checkout of Cockpit beside them:
@@ -396,12 +402,17 @@ git clone --depth 1 --branch v0.4.0 https://github.com/echelong/cobalt-cockpit .
 claude plugin test .
 ```
 
-These are deterministic and need no service: the egress tests use real loopback
+Apart from the harness tests, these are deterministic and need no service: the egress tests use real loopback
 sockets and two local servers; the browser tests inject a CDP client and route
 it through the real proxy; the host-hook tests mock the host.
 `capabilities/tests/smoke_hindsight.py` and `capabilities/tests/smoke-browser.mjs`
-are opt-in checks against real services you start yourself; the
-[release notes](docs/release-v0.1.0.md) record what they measured. Architecture
+are opt-in checks against real services you start yourself; the release notes
+for [0.1.0](docs/release-v0.1.0.md) and [0.1.1](docs/release-v0.1.1.md) record
+what was measured. `capabilities/tests/services.sh` is an optional development
+harness that starts and stops those disposable loopback services for a live
+test, from the paths you give it. The plugin never runs it and nothing starts by
+itself; its `stop` ends only the processes its own `start` recorded. Its tests
+need Linux with pasta and bubblewrap and say `SKIPPED` elsewhere. Architecture
 and rejected alternatives are in [docs/architecture.md](docs/architecture.md).
 Privacy is in [PRIVACY.md](PRIVACY.md) and the security model in
 [SECURITY.md](SECURITY.md).
