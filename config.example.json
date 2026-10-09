@@ -1,0 +1,17 @@
+{
+  "memory_enabled": false,
+  "hindsight_endpoint": "http://127.0.0.1:8888",
+  "memory_repositories": [],
+  "memory_retention_consent": false,
+  "memory_inference_configured": false,
+  "memory_timeout_ms": 10000,
+  "browser_enabled": false,
+  "obscura_endpoint": "ws://127.0.0.1:9222",
+  "browser_allowed_origins": [],
+  "browser_allow_localhost": false,
+  "browser_isolation_confirmed": false,
+  "browser_egress_proxy": "http://127.0.0.1:18080",
+  "browser_timeout_ms": 10000,
+  "browser_authorized_actions": [],
+  "screenshot_retention": "none"
+}

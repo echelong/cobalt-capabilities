@@ -1,0 +1,83 @@
+{
+  "date": "2026-10-09",
+  "hindsight": {
+    "kind": "real local CPU inference",
+    "version": "0.10.3",
+    "image_digest": "sha256:5b6ef2b892703f0e82c448786349c88db60f06d8c9190432b68af00ce6dc45e3",
+    "model": "qwen2.5:3b",
+    "paid_or_cloud_inference": false,
+    "retain_ms": 46040,
+    "retained_documents": 1,
+    "recalled_findings": 1,
+    "delete_ms": 16,
+    "remaining_findings": 0,
+    "missing_service": "unavailable",
+    "recovery": "ready",
+    "separate_banks": true,
+    "reflection_real_tested": true,
+    "reflect_ms": 175435,
+    "reflect_in_host_task_ms": 213717,
+    "missing_bank_reads_empty": true,
+    "agent_asserted_downgrade_tested": true,
+    "non_inference_observation_cap_ms": 30000
+  },
+  "obscura": {
+    "kind": "real isolated namespace browser",
+    "version": "0.2.4",
+    "archive_sha256": "757e7b597ba5cdd53af9fc701e0a9b80f0a8d788f545d4f82ec9ad32db77f000",
+    "checks": [
+      "real_js_dom",
+      "png_screenshot",
+      "console_error",
+      "network_observed",
+      "foreign_request_blocked",
+      "metadata_refused",
+      "fresh_context_storage_isolation",
+      "unauthorized_action_refused",
+      "approved_click",
+      "unauthorized_fill_refused",
+      "fill_value_mismatch_refused",
+      "approved_fill_dom_mutation",
+      "readonly_fill_refused",
+      "hidden_fill_refused",
+      "redirect_off_allowlist_refused_after_hop",
+      "timeout_not_verified",
+      "recovery"
+    ],
+    "png_bytes": 9736,
+    "refused_request_count": 1,
+    "foreign_server_hits": 0,
+    "redirect_hop_hits_before_refusal": 1,
+    "screenshot_persisted": false,
+    "external_egress": false,
+    "processes_stopped": true
+  },
+  "claude_host": {
+    "version": "2.1.295",
+    "kind": "real enabled Claude Code task with both companions",
+    "commander": "claude-opus-5-5 (orchestration enabled)",
+    "subagents": {
+      "cobalt-cockpit:scout": "Haiku, read-only; read verify.test.mjs; its Bash inventory was refused by the base read-only policy",
+      "cobalt-cockpit:worker": "Sonnet, wildcard write; all six capability steps ran once"
+    },
+    "permission_denials": 0,
+    "worker_results": {
+      "memory_status": "ready",
+      "memory_recall": "ready, empty bank",
+      "memory_reflect_ms": 213717,
+      "memory_retain": "agent_asserted (uncorroborated worker assertion downgraded)",
+      "memory_list": "ready",
+      "memory_forget": "ready, result_count 1",
+      "browser": "observed; snapshot named:Ada Lovelace; console observed; cleanup_confirmed true"
+    },
+    "commander_results": {
+      "test_gate": "node --test verify.test.mjs exit 0 (2 pass)",
+      "swarm_verify": "pass recorded for the worker task",
+      "memory_retain": "verified (ledger-corroborated)",
+      "memory_list_forget": "ready"
+    },
+    "persisted_receipts": 32,
+    "receipt_fields_observed": ["capability", "operation", "status", "at", "executed", "effectsPossible", "verification", "bank", "task", "operations"],
+    "evidence": "host-run-3.json"
+  }
+}

@@ -1,0 +1,16 @@
+# Engine-generated declarations; generated on development loading.
+.claude-plugin/types/
+# A checkout of Cobalt Cockpit for the cross-plugin tests (see README, Tests).
+.cockpit/
+node_modules/
+coverage/
+dist/
+*.tsbuildinfo
+*.log
+.DS_Store
+Thumbs.db
+.env
+.env.*
+.claude/
+__pycache__/
+*.pyc

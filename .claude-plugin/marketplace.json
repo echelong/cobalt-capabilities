@@ -1,0 +1,17 @@
+{
+  "name": "cobalt-capabilities",
+  "description": "Cobalt Capabilities public plugin marketplace.",
+  "owner": {
+    "name": "Cobalt Cockpit contributors"
+  },
+  "plugins": [
+    {
+      "name": "cobalt-capabilities",
+      "source": "./",
+      "description": "Optional companion for Cobalt Cockpit: explicit Hindsight project memory and bounded Obscura browser evidence. Both capabilities are off until you configure them, and each needs a local service you run yourself.",
+      "version": "0.1.0",
+      "license": "MIT",
+      "repository": "https://github.com/echelong/cobalt-capabilities"
+    }
+  ]
+}

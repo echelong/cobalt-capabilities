@@ -1,0 +1,9 @@
+{
+  "name": "cobalt-cockpit-capability-companion",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.12.0" },
+  "scripts": { "test:browser": "node --test tests/test-egress.mjs tests/test-browser.mjs" },
+  "optionalDependencies": { "puppeteer-core": "25.13.0" }
+}

@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cobalt-capabilities-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The Cobalt Cockpit release the cross-plugin tests run against.
+  COCKPIT_REF: v0.4.0
+
+jobs:
+  adapters:
+    name: Adapters, egress proxy and browser worker (no service, no dependency)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Memory adapter and broker tests
+        run: python3 -m unittest discover -s capabilities/tests -p 'test_*.py'
+      - name: Egress policy proxy tests (real loopback sockets, no browser)
+        run: node --test capabilities/tests/test-egress.mjs
+      - name: Browser worker tests (injected CDP client, real egress proxy)
+        run: node --test capabilities/tests/test-browser.mjs
+
+  plugin:
+    name: Plugin validation, host-hook tests, types and audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CI: "true"
+      DISABLE_AUTOUPDATER: "1"
+      CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: "1"
+      CLAUDE_CONFIG_DIR: /tmp/cobalt-capabilities-ci
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install pinned Claude Code
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --show-error --silent --location \
+            https://claude.ai/install.sh \
+            --output "$RUNNER_TEMP/claude-install.sh"
+          bash "$RUNNER_TEMP/claude-install.sh" 2.1.294
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify Claude Code version
+        shell: bash
+        run: |
+          set -euo pipefail
+          claude --version
+          claude --version | grep -F '2.1.294'
+
+      - name: Strict plugin validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          claude plugin validate --strict .
+          claude plugin validate --strict .claude-plugin/plugin.json
+          claude plugin validate --strict .claude-plugin/marketplace.json
+
+      - name: Public audit (manifests, defaults, lockfile, notices)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/audit.py
+
+      - name: Check out Cobalt Cockpit for the cross-plugin tests
+        uses: actions/checkout@v4
+        with:
+          repository: echelong/cobalt-cockpit
+          ref: ${{ env.COCKPIT_REF }}
+          path: .cockpit
+
+      - name: Run host-hook tests (this plugin's hooks with Cockpit's, both orders)
+        shell: bash
+        run: |
+          set -euo pipefail
+          claude plugin test .
+
+      - name: Generate host TypeScript declarations
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Claude Code writes its own declarations when loading a plugin directory.
+          # A host-only slash command needs no model credentials or model inference.
+          if ! timeout 30s claude --plugin-dir "$PWD/.cockpit" --plugin-dir "$PWD" -p '/cockpit version' \
+              > "$RUNNER_TEMP/type-bootstrap.log" 2>&1; then
+            echo "::notice::Plugin bootstrap returned nonzero; checking generated declarations."
+          fi
+          if [[ ! -s .claude-plugin/types/tsconfig.json ]]; then
+            echo "::error::Claude Code did not generate plugin TypeScript declarations."
+            cat "$RUNNER_TEMP/type-bootstrap.log"
+            exit 1
+          fi
+
+      - name: Typecheck against Claude Code declarations
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm exec --yes --package=typescript@5.9.3 -- tsc -p .
+
+      - name: Check Git whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          if git rev-parse --verify --quiet HEAD^ >/dev/null; then git diff --check HEAD^ HEAD; fi

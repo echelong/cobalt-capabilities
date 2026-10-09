@@ -1,0 +1,15 @@
+{
+  "name": "cobalt-capabilities",
+  "version": "0.1.0",
+  "description": "Optional companion for Cobalt Cockpit: explicit Hindsight project memory and bounded Obscura browser evidence. Both capabilities are off until you configure them, and each needs a local service you run yourself.",
+  "license": "MIT",
+  "homepage": "https://github.com/echelong/cobalt-capabilities#readme",
+  "repository": "https://github.com/echelong/cobalt-capabilities",
+  "author": {"name":"Cobalt Cockpit contributors"},
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "memoryEnabled": {"type":"boolean","title":"Enable memory companion","description":"Permit explicit memory operations against an independently configured Hindsight service.","default":false},
+    "browserEnabled": {"type":"boolean","title":"Enable browser companion","description":"Permit bounded browser tasks against an independently isolated Obscura service.","default":false},
+    "configurationPath": {"type":"string","title":"Operator configuration file","description":"Absolute path to a private operator-owned JSON file. Both capability switches must also be enabled in this file.","default":""}
+  }
+}
