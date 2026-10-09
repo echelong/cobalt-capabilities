@@ -29,6 +29,11 @@ const STATUS = /^(disabled|ready|unavailable|error|success|refused|timeout|obser
 const OPERATION = /^(status|recall|retain|reflect|list|forget|task)$/
 const STEP = /^(status|navigate|inspect|snapshot|console|network|screenshot|click|fill)$/
 const ERROR = /^(interrupted|timeout|service_unavailable|operation_refused_or_invalid_response|repository_not_enabled|browser_timeout|browser_output_limit|browser_unavailable|browser_egress_unverified|browser_egress_unavailable|browser_policy_or_execution_error|browser_cleanup_failed|browser_invalid_input|worker_unavailable_or_timeout|worker_failed|resource_busy|lock_storage_unavailable|invalid_configuration_or_request)$/
+/** The rule a worker named for a refusal: the closed list the two workers use.
+ * A name outside it is dropped, so no worker text can reach a receipt this way. */
+const REASON = /^(unsupported_operation|secret_or_invalid_input|repository_required|configuration_refused|inference_not_configured|retention_consent_required|invalid_query|unsupported_argument|invalid_summary|provenance_required|invalid_references|source_commit_required|document_scope_refused|deletion_confirmation_required|service_refused_or_invalid_response|not_found|invalid_task_id|invalid_steps|selector_refused|grant_missing|grant_origin_mismatch|fill_value_refused|screenshot_consent_required|navigation_url_required|navigation_refused_by_policy|navigation_not_committed|page_origin_not_allowlisted|page_refused_by_egress|fill_target_not_found|fill_target_not_editable|fill_target_not_focusable|fill_not_applied)$/
+/** Present only on a refusal a worker named; every other row has no such field. */
+const named = (v: unknown): { reason?: string } => { const reason = token(v, REASON); return reason ? { reason } : {} }
 
 /** HUD label for a step the worker reported as started. The tables are the
  * whole vocabulary: a name the worker did not report, or one outside them,
@@ -61,7 +66,7 @@ export const displayOf = (receipt: Receipt): string => receipt.status === 'disab
   : receipt.status === 'unavailable' ? 'Unavailable' : 'Error'
 
 /** One row of the capability ledger pane: fixed fields only, never content. */
-export const receiptLine = (r: Receipt): string => `${r.capability} ${r.operation} ${r.status} · ${r.durationMs === null ? 'duration unknown' : `${r.durationMs}ms`} · count ${r.count ?? 'unknown'} · task ${r.task ?? 'unknown'} · ${r.operations.join(',')} · verification ${r.verification}${r.executed ? ' · executed' : r.effectsPossible ? ' · evidence invalid, effects possible' : ''}${r.fallback ? ` · fallback ${r.error ?? 'unknown'}` : ''}`
+export const receiptLine = (r: Receipt): string => `${r.capability} ${r.operation} ${r.status} · ${r.durationMs === null ? 'duration unknown' : `${r.durationMs}ms`} · count ${r.count ?? 'unknown'} · task ${r.task ?? 'unknown'} · ${r.operations.join(',')} · verification ${r.verification}${r.executed ? ' · executed' : r.effectsPossible ? ' · evidence invalid, effects possible' : ''}${r.fallback ? ` · fallback ${r.error ?? 'unknown'}` : ''}${r.reason ? ` · reason ${r.reason}` : ''}`
 
 /** Re-validate a previously projected receipt from the plugin store. A stored
  * row is untrusted input: anything malformed is dropped, never displayed. */
@@ -80,6 +85,7 @@ export const storedReceipt = (value: unknown): Receipt | null => {
     operations: Array.isArray(row['operations']) ? (row['operations'] as unknown[]).slice(0, 12).map(step => token(step, STEP)).filter((step): step is string => step !== null) : [],
     fallback: row['fallback'] === true,
     error: token(row['error'], ERROR),
+    ...named(row['reason']),
   }
 }
 
@@ -123,4 +129,5 @@ export const receiptOf = (capability: 'memory' | 'browser', operation: string, v
       : []).filter((v): v is string => v !== null),
   fallback: value['fallback'] === true || ['error', 'unavailable', 'timeout', 'refused'].includes(String(value['status'])),
   error: token(value['error'], ERROR),
+  ...named(value['refusal_reason']),
 })

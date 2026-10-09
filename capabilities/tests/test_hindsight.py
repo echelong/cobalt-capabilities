@@ -574,6 +574,72 @@ class HindsightTests(unittest.TestCase):
         for call in run.call_args_list:
             self.assertEqual(tuple(call.args[0][:5]), ("git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"))
 
+    def test_a_refusal_names_the_rule_beside_the_unchanged_general_code(self):
+        doc = self.retain()["document_id"]
+        other = "cobalt-" + "0" * 16 + "-" + "0" * 32
+        sent = len(self.server.calls)
+        local = [
+            ("provenance_required", None, "retain", {"summary": "ok", "verified": True}),
+            ("provenance_required", None, "retain", {"summary": "ok", "run_id": "run-1"}),
+            ("invalid_summary", None, "retain", {"summary": "x" * 4001, "run_id": "r", "verification_reference": "v"}),
+            ("unsupported_argument", None, "retain", {"summary": "ok", "run_id": "r", "verification_reference": "v", "transcript": "whole session"}),
+            ("invalid_references", None, "retain", {"summary": "ok", "run_id": "r", "verification_reference": "v", "source_references": ["a"] * 11}),
+            ("secret_or_invalid_input", None, "retain", {"summary": "api_key=secret-value", "run_id": "r", "verification_reference": "v"}),
+            ("retention_consent_required", Hindsight({**self.config, "memory_retention_consent": False}, self.repo), "retain", {"summary": "ok", "run_id": "r", "verification_reference": "v"}),
+            ("inference_not_configured", Hindsight({**self.config, "memory_inference_configured": False}, self.repo), "recall", {"query": "x"}),
+            ("invalid_query", None, "recall", {"query": ""}),
+            ("document_scope_refused", None, "forget", {"document_id": other, "confirm_document_id": other}),
+            ("deletion_confirmation_required", None, "forget", {"document_id": doc, "confirm_document_id": other}),
+            ("unsupported_operation", None, "purge", {}),
+            ("configuration_refused", Hindsight({**self.config, "memory_timeout_ms": 5}, self.repo), "status", {}),
+        ]
+        for reason, client, operation, arguments in local:
+            # One adapter per call, as the broker makes them.
+            result = (client or Hindsight(self.config, self.repo)).execute(operation, arguments)
+            self.assertEqual(result["status"], "error", reason)
+            self.assertEqual(result["error"], "operation_refused_or_invalid_response", reason)
+            self.assertEqual(result["refusal_reason"], reason)
+            self.assertIs(result["executed"], False, reason)
+            self.assertNotIn("effects_possible", result, reason)
+        self.assertEqual(len(self.server.calls), sent, "a locally refused operation contacts nothing")
+
+    def test_a_reason_tells_a_service_answer_from_a_local_refusal_and_never_carries_service_text(self):
+        doc = self.retain()["document_id"]
+        self.server.payload = {"results": "private service text"}
+        refused = self.client.execute("recall", {"query": "x"})
+        self.assertEqual((refused["error"], refused["refusal_reason"]), ("operation_refused_or_invalid_response", "service_refused_or_invalid_response"))
+        self.assertNotIn("private", json.dumps(refused))
+        self.server.payload, self.server.code = {"detail": "private service text"}, 500
+        failed = self.client.execute("forget", {"document_id": doc, "confirm_document_id": doc})
+        self.assertEqual(failed["refusal_reason"], "service_refused_or_invalid_response")
+        self.assertIs(failed["effects_possible"], True)
+        self.assertNotIn("private", json.dumps(failed))
+        self.server.code = 404
+        missing = self.client.execute("forget", {"document_id": doc, "confirm_document_id": doc})
+        self.assertEqual(missing["refusal_reason"], "not_found")
+        self.assertNotIn("effects_possible", missing)
+        # Other codes keep no reason: they already say what happened.
+        self.server.code, self.server.payload = 200, None
+        outside = Hindsight({**self.config, "memory_repositories": []}, self.repo).execute("status")
+        self.assertEqual(outside["error"], "repository_not_enabled")
+        self.assertNotIn("refusal_reason", outside)
+        down = Hindsight({**self.config, "hindsight_endpoint": "http://127.0.0.1:1"}, self.repo).execute("status")
+        self.assertEqual(down["error"], "service_unavailable")
+        self.assertNotIn("refusal_reason", down)
+
+    def test_only_this_adapters_own_tokens_become_a_reason(self):
+        reason = module._refusal_reason
+        self.assertEqual(reason(ValueError("provenance_required")), "provenance_required")
+        self.assertEqual(reason(json.JSONDecodeError("private", "private body", 0)), "service_refused_or_invalid_response")
+        self.assertEqual(reason(module._MissingBank()), "not_found")
+        # A library error is never read for a name, whatever its text says.
+        self.assertIsNone(reason(UnicodeDecodeError("utf-8", b"provenance_required", 0, 1, "provenance_required")))
+        self.assertIsNone(reason(ValueError("invalid literal for int() with base 10: 'private'")))
+        self.assertIsNone(reason(TypeError("provenance_required")))
+        self.assertIsNone(reason(AttributeError("provenance_required")))
+        for name in set(module._REFUSAL_REASONS.values()) | {"not_found"}:
+            self.assertRegex(name, r"^[a-z_]{1,48}$")
+
 
 if __name__ == "__main__":
     unittest.main()

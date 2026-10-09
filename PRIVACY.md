@@ -20,7 +20,7 @@ This policy describes what `cobalt-capabilities` reads, sends and keeps. It is w
 
 ### What the companion stores
 
-- Up to 64 **receipts** in Claude Code's plugin store: capability, operation, status, time, duration, result count, bank hash, task id, step names and a fixed error code. No query, summary, memory text, page text, URL, screenshot or raw error. `/capabilities clear` deletes them all.
+- Up to 64 **receipts** in Claude Code's plugin store: capability, operation, status, time, duration, result count, bank hash, task id, step names, a fixed error code and, for a refusal, the fixed name of the rule that refused. No query, summary, memory text, page text, URL, screenshot or raw error. `/capabilities clear` deletes them all.
 - One **empty lock file** in a private `cobalt-capabilities-<uid>/locks` directory under `/run/user/<uid>` (or `/tmp`). This is the one thing the companion writes outside the plugin store.
 - Tool responses, including recalled memory text and any screenshot, become part of Claude Code's own session history like any other tool response. Claude Code's controls apply to those.
 

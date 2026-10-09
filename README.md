@@ -195,6 +195,31 @@ confinement above. Use the render-enabled, non-stealth Obscura build, with no
 `--storage-dir` and no `--stealth`. No other proxy is supported: the browser's
 proxy must be this worker's.
 
+### Stop the confined browser
+
+Stop the browser itself, not the wrapper, and check that it has gone. Signalling
+`pasta` is not enough: it exits on `SIGTERM` without ending the namespace it
+created. Inside that namespace the outer `bwrap` is PID 1, so the kernel discards
+a `SIGTERM` sent to it from the host, and the inner `bwrap` and the browser sit
+in their own session, where a signal to the wrapper's process group never
+arrives. `--die-with-parent` does not always cover this: where SELinux confines
+`pasta` (Fedora's `pasta_t` domain) the kill it asks for is denied, and the
+browser keeps running, detached and without a network, after the wrapper has
+exited. Measured on Fedora 44 with SELinux enforcing, passt 2026-10-02 and
+bubblewrap 0.12.0.
+
+1. Send `SIGTERM` to the `obscura` process, found as a descendant of the `pasta`
+   process you started (`pgrep -P <pid>`, three levels down). It exits and the
+   two `bwrap` processes follow.
+2. If anything is left, send `SIGKILL` to the outer `bwrap` (the direct child of
+   `pasta`). A namespace's PID 1 cannot refuse that signal, and the kernel ends
+   everything inside the namespace with it.
+3. Confirm that no process of that tree remains before you treat the browser as
+   stopped. A wrapper that has exited proves nothing about its children.
+
+Follow the pids from the process you launched. Do not select by name: another
+browser on the same machine must not be touched.
+
 ## Tools
 
 `mcp__cobalt-capabilities__memory` takes `operation`:
@@ -233,6 +258,17 @@ A task whose only step is `status` is a readiness check: it confirms the control
 endpoint answers and that the browser is routed through the egress proxy, and
 loads no destination. It cannot be combined with other steps.
 
+`inspect` takes an optional `selector`. Without one it returns what `snapshot`
+returns. With one, the evidence keeps those page-level fields and adds
+`selector` and `element`: `{"found": true, "tag": "P", "type": "", "text": "…"}`
+for the first element that matches, or `{"found": false}` when none does, which
+is an observation and not an error. `text` is the element's text as the engine
+renders it, bounded and redacted like page text. It is always empty for a text
+input or a textarea, because form values are never returned, and for a script,
+style, template, `noscript` or head element and anything inside one, because
+page-authored source is never returned. A selector longer than 256 characters is
+refused; an empty one counts as none. `snapshot` ignores a selector.
+
 `click` and `fill` need an exact grant in the private file, removed after use:
 
 ```json
@@ -243,6 +279,25 @@ loads no destination. It cannot be combined with other steps.
 selector, value and origin, and is checked against the active page at execution.
 Only a connected, enabled, editable text control can be filled. `POST`
 submissions, credentials and purchases are outside this companion.
+
+### Refusals
+
+A call that is refused keeps its general `error` code
+(`operation_refused_or_invalid_response` for memory,
+`browser_policy_or_execution_error` for the browser). When one of the
+companion's own rules refused it, the result also carries `refusal_reason`, the
+fixed name of that rule:
+
+| Tool | `refusal_reason` |
+|---|---|
+| memory | `provenance_required` (a retain needs `run_id` and `verification_reference`), `invalid_summary`, `invalid_references`, `unsupported_argument`, `invalid_query`, `secret_or_invalid_input`, `document_scope_refused` (not a document this companion wrote in this bank), `deletion_confirmation_required`, `retention_consent_required`, `inference_not_configured`, `repository_required`, `source_commit_required`, `configuration_refused`, `unsupported_operation`, `not_found`, `service_refused_or_invalid_response` (the service answered and its answer was refused) |
+| browser | `grant_missing`, `grant_origin_mismatch`, `selector_refused`, `fill_value_refused`, `navigation_refused_by_policy`, `navigation_url_required`, `navigation_not_committed`, `page_origin_not_allowlisted`, `page_refused_by_egress`, `screenshot_consent_required`, `fill_target_not_found`, `fill_target_not_editable`, `fill_target_not_focusable`, `fill_not_applied`, `invalid_task_id`, `invalid_steps`, `unsupported_operation`, `configuration_refused` |
+
+A reason is a name from this list and nothing else: it never carries page text,
+a service answer or an exception message, and it does not say which entry of the
+private file decided. A failure with no `refusal_reason` did not come from one
+of these rules (the engine, the service or the runtime failed), and the other
+error codes are already specific and carry none.
 
 ## Ownership and verification
 
@@ -272,7 +327,8 @@ each step really starts; a call refused before any service I/O never shows as an
 operation. With both switches off the HUD is unchanged.
 
 `/capabilities` shows up to 64 receipts: operation, status, duration, result
-count, bank hash, task id, step names and a fixed error code. No query, summary,
+count, bank hash, task id, step names, a fixed error code and, for a refusal, the
+fixed name of the rule that refused. No query, summary,
 page text, URL, screenshot or raw error is stored. `/capabilities clear` deletes
 every stored receipt. A failed browser task whose
 earlier steps may already have had an effect is recorded as "evidence invalid,

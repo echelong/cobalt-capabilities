@@ -72,6 +72,7 @@ function fixture({ navigateHang = false, connectHang = false, invalidImage = fal
       tagName: 'INPUT', type: 'text', disabled: false, readOnly: false, isConnected: true, value: '', attributes: {},
       getAttribute(name) { return this.attributes[name] ?? (name === 'type' ? this.type : null); },
       focus() { focused = this; }, select() { this.value = ''; },
+      closest() { return null; }, querySelector() { return null; },
     }, fields[selector] ?? {}));
     return elements.get(selector);
   };
@@ -115,6 +116,10 @@ function fixture({ navigateHang = false, connectHang = false, invalidImage = fal
           },
           async click(selector) { state.actions.push(selector); },
           async $(selector) {
+            // `fields[selector]` set to null is an element that is not in the
+            // page; set to an Error it is a selector the engine cannot evaluate.
+            if (fields[selector] === null) return null;
+            if (fields[selector] instanceof Error) throw fields[selector];
             const element = elementFor(selector);
             return {
               async evaluate(fn, arg) {
@@ -122,6 +127,8 @@ function fixture({ navigateHang = false, connectHang = false, invalidImage = fal
                 // Page functions run in the page; give them its `document`.
                 const previous = globalThis.document;
                 globalThis.document = { get activeElement() { return focused; } };
+                // `unreadable` models an engine that hands back nothing for the element.
+                if (element.unreadable) return null;
                 try { return fn(element, arg); }
                 finally { if (previous === undefined) delete globalThis.document; else globalThis.document = previous; }
               },
@@ -743,4 +750,157 @@ test('page text loses the same invisible characters the memory filter removes', 
   assert.equal(text.includes('sk-abcdefghijklmnop'), false, 'a key rejoined by the stripping must be redacted');
   assert.match(text, /visible/);
   assert.match(text, /\t|visible \[redacted\]/);
+});
+
+test('inspect with a selector reports that element beside the page-level fields', async () => {
+  const f = fixture({ fields: { '#result': { tagName: 'P', type: undefined, innerText: 'Hello, Cobalt! token=abc123' } } });
+  const result = await executeBrowser(config, { ...args, steps: [args.steps[0], { operation: 'inspect', selector: '#result' }] }, f);
+  assert.equal(result.status, 'observed');
+  const { evidence } = result.results[1];
+  assert.equal(evidence.selector, '#result');
+  assert.deepEqual(evidence.element, { found: true, tag: 'P', type: '', text: 'Hello, Cobalt! token=[redacted]' });
+  // What a caller read before is still there, unchanged.
+  assert.equal(evidence.title, 'fixture'); assert.equal(typeof evidence.text, 'string'); assert.equal(Array.isArray(evidence.elements), true);
+  assert.equal(result.results[1].trust, 'untrusted_reference');
+});
+
+test('inspect with no selector, and snapshot with one, are the page-level observation they were', async () => {
+  const f = fixture();
+  const steps = [args.steps[0], { operation: 'inspect' }, { operation: 'inspect', selector: '' }, { operation: 'inspect', selector: null },
+    { operation: 'snapshot', selector: '#result' }, { operation: 'snapshot' }];
+  const result = await executeBrowser(config, { ...args, steps }, f);
+  assert.equal(result.status, 'observed');
+  for (const index of [1, 2, 3, 4]) assert.deepEqual(result.results[index].evidence, result.results[5].evidence, String(index));
+  assert.deepEqual(Object.keys(result.results[1].evidence).sort(), ['elements', 'text', 'title', 'url']);
+});
+
+test('inspect reports a missing element as absent, not as a failure', async () => {
+  const f = fixture({ fields: { '#missing': null } });
+  const result = await executeBrowser(config, { ...args, steps: [args.steps[0], { operation: 'inspect', selector: '#missing' }] }, f);
+  assert.equal(result.status, 'observed');
+  assert.deepEqual(result.results[1].evidence.element, { found: false });
+});
+
+test('an element that is there but cannot be described is a failure, never reported absent', async () => {
+  const f = fixture({ fields: { '#result': { tagName: 'P', unreadable: true } } });
+  const result = await executeBrowser(config, { ...args, steps: [args.steps[0], { operation: 'inspect', selector: '#result' }] }, f);
+  assert.equal(result.status, 'error'); assert.equal(result.error, 'browser_policy_or_execution_error');
+  assert.equal('refusal_reason' in result, false); assert.deepEqual(result.results, []);
+});
+
+test('inspect never returns what a text control holds', async () => {
+  for (const tagName of ['INPUT', 'TEXTAREA']) {
+    const f = fixture({ fields: { '#name': { tagName, value: 'typed private value', innerText: 'typed private value', textContent: 'typed private value' } } });
+    const result = await executeBrowser(config, { ...args, steps: [args.steps[0], { operation: 'inspect', selector: '#name' }] }, f);
+    assert.equal(result.status, 'observed', tagName);
+    assert.deepEqual(result.results[1].evidence.element, { found: true, tag: tagName, type: 'text', text: '' }, tagName);
+    assert.equal(JSON.stringify(result).includes('typed private value'), false, tagName);
+  }
+});
+
+test('inspect never returns page-authored source: scripts, styles, templates and the head yield no text', async () => {
+  const source = 'window.csrf = {"sessionKey":"page-authored-source"}';
+  // An element that is not rendered answers innerText with its raw content.
+  const unrendered = tagName => ({ tagName, type: undefined, innerText: source, textContent: source, closest() { return this; } });
+  const inside = { tagName: 'SPAN', type: undefined, innerText: source, textContent: source, closest() { return { tagName: 'TEMPLATE' }; } };
+  const fields = { script: unrendered('SCRIPT'), style: unrendered('STYLE'), template: unrendered('TEMPLATE'), noscript: unrendered('NOSCRIPT'), head: unrendered('HEAD'), 'template span': inside };
+  for (const selector of Object.keys(fields)) {
+    const result = await executeBrowser(config, { ...args, steps: [args.steps[0], { operation: 'inspect', selector }] }, fixture({ fields }));
+    assert.equal(result.status, 'observed', selector);
+    assert.equal(result.results[1].evidence.element.found, true, selector); assert.equal(result.results[1].evidence.element.text, '', selector);
+    assert.equal(JSON.stringify(result.results[1].evidence.element).includes('page-authored-source'), false, selector);
+  }
+  // A container that holds one is read from a copy with those parts removed.
+  const removed = [];
+  const container = { tagName: 'DIV', type: undefined, innerText: `visible ${source}`, textContent: `visible ${source}`,
+    querySelector() { return {}; },
+    cloneNode(deep) { assert.equal(deep, true); return { textContent: 'visible', querySelectorAll(list) { removed.push(list); return [{ remove() { removed.push('removed'); } }]; } }; } };
+  const held = await executeBrowser(config, { ...args, steps: [args.steps[0], { operation: 'inspect', selector: '#box' }] }, fixture({ fields: { '#box': container } }));
+  assert.deepEqual(held.results[1].evidence.element, { found: true, tag: 'DIV', type: '', text: 'visible' });
+  assert.deepEqual(removed, ['script,style,template,noscript,head,textarea', 'removed']);
+  // An engine that cannot answer those questions gives no text, not raw text.
+  const bare = { tagName: 'P', type: undefined, innerText: source, textContent: source, closest: undefined, querySelector: undefined };
+  const closed = await executeBrowser(config, { ...args, steps: [args.steps[0], { operation: 'inspect', selector: '#bare' }] }, fixture({ fields: { '#bare': bare } }));
+  assert.deepEqual(closed.results[1].evidence.element, { found: true, tag: 'P', type: '', text: '' });
+});
+
+test('a malformed inspect selector is refused before any connection; one the engine rejects is the engine\'s failure', async () => {
+  for (const selector of ['x'.repeat(257), 7, ['#a'], { id: 'a' }]) {
+    const f = fixture();
+    const result = await executeBrowser(config, { ...args, steps: [args.steps[0], { operation: 'inspect', selector }] }, f);
+    assert.equal(result.status, 'error', String(selector)); assert.equal(result.error, 'browser_policy_or_execution_error');
+    assert.equal(result.refusal_reason, 'selector_refused'); assert.equal(f.state.connected, 0);
+  }
+  // Whatever the engine throws for a selector it cannot evaluate is not one of
+  // this worker's rules: the general code, no reason, and none of its text.
+  const f = fixture({ fields: { '##': new Error('SyntaxError: private upstream text /private/path') } });
+  const result = await executeBrowser(config, { ...args, steps: [args.steps[0], { operation: 'inspect', selector: '##' }] }, f);
+  assert.equal(result.status, 'error'); assert.equal(result.error, 'browser_policy_or_execution_error'); assert.equal('refusal_reason' in result, false);
+  assert.equal(JSON.stringify(result).includes('private'), false);
+  assert.deepEqual(result.operations_completed, ['navigate']); assert.equal(result.step_in_flight, 'inspect');
+  // A connection lost during the lookup stays what it was in 0.1.0: unavailable.
+  const lost = await executeBrowser(config, { ...args, steps: [args.steps[0], { operation: 'inspect', selector: '#result' }] },
+    fixture({ fields: { '#result': new Error('WebSocket is not open: readyState 3') } }));
+  assert.equal(lost.status, 'unavailable'); assert.equal(lost.error, 'browser_unavailable'); assert.equal('refusal_reason' in lost, false);
+});
+
+test('a refusal names the rule that refused, beside the unchanged general code', async () => {
+  const granted = { operation: 'fill', selector: '#search', value: 'test' };
+  const grants = [{ task_id: args.task_id, origin: 'https://fixture.example', ...granted }];
+  const allowed = { ...config, browser_authorized_actions: grants };
+  const cases = [
+    ['grant_missing', config, { ...args, steps: [args.steps[0], { operation: 'click', selector: '#go' }] }, {}],
+    ['grant_missing', allowed, { ...args, task_id: 'another-task', steps: [args.steps[0], granted] }, {}],
+    ['grant_missing', allowed, { ...args, steps: [args.steps[0], { ...granted, value: 'other' }] }, {}],
+    ['selector_refused', allowed, { ...args, steps: [args.steps[0], { operation: 'click', selector: '#password' }] }, {}],
+    ['fill_value_refused', { ...config, browser_authorized_actions: [{ ...grants[0], value: '' }] }, { ...args, steps: [args.steps[0], { ...granted, value: '' }] }, {}],
+    ['navigation_refused_by_policy', config, { ...args, steps: [{ operation: 'navigate', url: 'https://elsewhere.example/' }] }, {}],
+    ['navigation_url_required', config, { ...args, steps: [{ operation: 'navigate' }] }, {}],
+    ['screenshot_consent_required', config, { ...args, steps: [args.steps[0], { operation: 'screenshot' }] }, {}],
+    ['unsupported_operation', config, { ...args, steps: [{ operation: 'cookies' }] }, {}],
+    ['invalid_steps', config, { ...args, steps: [] }, {}],
+    ['invalid_task_id', config, { ...args, task_id: 'not a task id' }, {}],
+    ['configuration_refused', { ...config, browser_allowed_origins: [] }, args, {}],
+    ['page_origin_not_allowlisted', config, args, { redirectTo: 'https://elsewhere.example/' }],
+    ['navigation_not_committed', config, args, { stayBlank: true }],
+    ['fill_target_not_found', allowed, { ...args, steps: [args.steps[0], granted] }, { fields: { '#search': null } }],
+    ['fill_target_not_editable', allowed, { ...args, steps: [args.steps[0], granted] }, { fields: { '#search': { tagName: 'DIV' } } }],
+    ['fill_target_not_focusable', allowed, { ...args, steps: [args.steps[0], granted] }, { fields: { '#search': { focus() {} } } }],
+    ['fill_not_applied', allowed, { ...args, steps: [args.steps[0], granted] }, { fillNoop: true }],
+  ];
+  for (const [reason, configuration, request, options] of cases) {
+    const result = await executeBrowser(configuration, request, fixture(options));
+    assert.equal(result.status, 'error', reason); assert.equal(result.executed, false, reason);
+    assert.equal(result.error, 'browser_policy_or_execution_error', reason);
+    assert.equal(result.refusal_reason, reason);
+    assert.deepEqual(result.results, [], reason);
+  }
+});
+
+test('a refused fill value is refused the same way whether or not a grant exists', async () => {
+  // The value rule answers before any grant is consulted, so it cannot be used
+  // to learn what the private file grants.
+  const step = { operation: 'fill', selector: '#search', value: 'password=synthetic' };
+  const withGrant = { ...config, browser_authorized_actions: [{ task_id: args.task_id, origin: 'https://fixture.example', ...step }] };
+  for (const configuration of [config, withGrant]) {
+    const f = fixture();
+    const result = await executeBrowser(configuration, { ...args, steps: [args.steps[0], step] }, f);
+    assert.equal(result.refusal_reason, 'fill_value_refused'); assert.equal(f.state.connected, 0);
+  }
+});
+
+test('only this worker\'s own rules carry a reason: upstream failures and other codes have none', async () => {
+  const forged = await executeBrowser(config, args, { lookup, connect: async () => { const error = new Error('Browser interaction lacks an exact operator grant'); error.reason = 'grant_missing'; throw error; } });
+  assert.equal(forged.error, 'browser_policy_or_execution_error'); assert.equal('refusal_reason' in forged, false);
+  const down = await executeBrowser(config, args, { lookup, connect: async () => { throw new Error('ECONNREFUSED'); } });
+  assert.equal(down.error, 'browser_unavailable'); assert.equal('refusal_reason' in down, false);
+  const slow = await executeBrowser(config, args, fixture({ navigateHang: true }));
+  assert.equal(slow.error, 'browser_timeout'); assert.equal('refusal_reason' in slow, false);
+  const unrouted = await executeBrowser(config, args, fixture({ egress: 'unproxied' }));
+  assert.equal(unrouted.error, 'browser_egress_unverified'); assert.equal('refusal_reason' in unrouted, false);
+  // A cleanup failure replaces the code, so the earlier refusal's reason goes with it.
+  const refused = await executeBrowser(config, args, fixture({ redirectTo: 'https://elsewhere.example/' }));
+  assert.equal(refused.refusal_reason, 'page_origin_not_allowlisted');
+  const unclean = await executeBrowser(config, args, fixture({ redirectTo: 'https://elsewhere.example/', closeFails: true }));
+  assert.equal(unclean.error, 'browser_cleanup_failed'); assert.equal('refusal_reason' in unclean, false);
 });

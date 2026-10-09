@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { mergeReceipts, ownershipDenial, receiptLine, receiptOf, stepLabel, stepLines } from '../hooks/state'
+import { mergeReceipts, ownershipDenial, receiptLine, receiptOf, stepLabel, stepLines, storedReceipts } from '../hooks/state'
 import type { Receipt } from '../hooks/state'
 import { register as registerCompanion } from '../hooks/register'
 import { register } from '../.cockpit/hooks/register'
@@ -56,6 +56,26 @@ describe('optional companion ownership and bounded telemetry', () => {
     const partial = receiptOf('browser','task',{status:'error',executed:false,effects_possible:true,operations_completed:['navigate'],steps_completed:1,step_in_flight:'fill',results:[],html:'private page'},2)
     expect(partial.effectsPossible).toBe(true); expect(partial.operations).toEqual(['navigate']); expect(partial.verification).toBe('unknown')
     expect(JSON.stringify(partial)).not.toContain('private')
+  })
+  test('a receipt keeps the rule a worker named for a refusal, and nothing else a worker says there', () => {
+    const refused = receiptOf('browser','task',{status:'error',executed:false,error:'browser_policy_or_execution_error',refusal_reason:'grant_missing',task_id:'fixture'},3)
+    expect(refused.reason).toBe('grant_missing'); expect(refused.error).toBe('browser_policy_or_execution_error'); expect(refused.executed).toBe(false)
+    expect(receiptLine(refused)).toBe('browser task error · duration unknown · count unknown · task fixture ·  · verification unknown · fallback browser_policy_or_execution_error · reason grant_missing')
+    const memory = receiptOf('memory','retain',{status:'error',executed:false,error:'operation_refused_or_invalid_response',refusal_reason:'provenance_required'},4)
+    expect(memory.reason).toBe('provenance_required')
+    // Outside the closed list, the field does not exist at all: not text, not null.
+    for (const forged of ['private page text', 'grant_missing; token=synthetic', 'GRANT_MISSING', '', 7, null, ['grant_missing'], {reason:'grant_missing'}]) {
+      const row = receiptOf('browser','task',{status:'error',executed:false,error:'browser_policy_or_execution_error',refusal_reason:forged},5)
+      expect('reason' in row).toBe(false); expect(JSON.stringify(row)).not.toContain('private'); expect(JSON.stringify(row)).not.toContain('synthetic')
+    }
+    // A row with no reason reads exactly as it did before.
+    const plain = receiptOf('memory','recall',{status:'error',executed:false,error:'operation_refused_or_invalid_response'},6)
+    expect('reason' in plain).toBe(false)
+    expect(receiptLine(plain)).toBe('memory recall error · duration unknown · count unknown · task unknown ·  · verification unknown · fallback operation_refused_or_invalid_response')
+    // The stored form is re-validated the same way on restore.
+    expect(storedReceipts([refused])[0]?.reason).toBe('grant_missing')
+    expect('reason' in storedReceipts([{ ...refused, reason: 'private page text' }])[0]!).toBe(false)
+    expect('reason' in storedReceipts([plain])[0]!).toBe(false)
   })
   test('a bounded merge keeps the newest receipts, whoever wrote them', () => {
     const row = (at: number, task: string): Receipt => ({ capability:'browser', operation:'task', status:'observed', at, durationMs:null, count:null,

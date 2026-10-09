@@ -31,6 +31,42 @@ class _NotEnabled(ValueError):
     """The operator has not named this repository for memory."""
 
 
+# Which of this adapter's own rules refused, by name. The keys are the fixed
+# tokens raised in this file; nothing a service sends, no exception text and no
+# setting's value can become a reason, and a failure with no entry has none.
+# The three service entries share one name: they say the service answered and
+# its answer was refused, as opposed to a request this adapter never sent.
+_REFUSAL_REASONS = {
+    "unsupported_operation": "unsupported_operation",
+    "secret_or_invalid_input": "secret_or_invalid_input",
+    "repository_required": "repository_required",
+    "invalid_endpoint": "configuration_refused",
+    "invalid_timeout": "configuration_refused",
+    "inference_not_configured": "inference_not_configured",
+    "retention_consent_required": "retention_consent_required",
+    "invalid_query": "invalid_query",
+    "summary_only": "unsupported_argument",
+    "invalid_summary": "invalid_summary",
+    "provenance_required": "provenance_required",
+    "invalid_references": "invalid_references",
+    "source_commit_required": "source_commit_required",
+    "document_scope_refused": "document_scope_refused",
+    "deletion_confirmation_required": "deletion_confirmation_required",
+    "service_error": "service_refused_or_invalid_response",
+    "response_too_large": "service_refused_or_invalid_response",
+    "invalid_response": "service_refused_or_invalid_response",
+}
+
+
+def _refusal_reason(error):
+    if isinstance(error, _MissingBank):
+        return "not_found"
+    if isinstance(error, json.JSONDecodeError):
+        return "service_refused_or_invalid_response"
+    # Exactly ValueError: a subclass raised by a library carries its own text.
+    return _REFUSAL_REASONS.get(str(error)) if type(error) is ValueError else None
+
+
 # Invisible characters are removed by Unicode category, not from a list of
 # ranges: every control (except tab and the two line ends), every format
 # character (Cf: bidi controls, zero-width characters, the byte-order mark,
@@ -541,9 +577,13 @@ class Hindsight:
         except _NotEnabled:
             # One locally diagnosable code: nothing was derived, sent or read.
             result.update(status="error", error="repository_not_enabled", fallback=True)
-        except (ValueError, TypeError, AttributeError, RecursionError, OverflowError):
+        except (ValueError, TypeError, AttributeError, RecursionError, OverflowError) as error:
             # Never surface raw server bodies, URLs, credentials or exception strings.
+            # The general code is unchanged; a refusal by a named rule also says which.
             result.update(status="error", error="operation_refused_or_invalid_response", fallback=True)
+            reason = _refusal_reason(error)
+            if reason:
+                result["refusal_reason"] = reason
         if operation == "retain" and "document_id" in result:
             result["outcome"] = "confirmed" if result["status"] == "ready" else "unknown"
         # A write whose request reached the service and whose answer is missing

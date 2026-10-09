@@ -51,6 +51,16 @@ export function isForbiddenAddress(address) {
     || normalized.startsWith('2001:db8:') || normalized.startsWith('2002:');
 }
 
+/** A refusal by one of this worker's own fixed rules. Only these carry a
+ * `refusal_reason`: a name from this file, never text from a page, the browser
+ * service or an upstream error, and never which private setting decided it. */
+class Refusal extends Error {
+  constructor(reason, message) { super(message); this.reason = reason; }
+}
+const refuse = (reason, message) => new Refusal(reason, message);
+/** Whether an `inspect` step asks about one element. */
+const selects = step => step.selector !== undefined && step.selector !== null && step.selector !== '';
+
 const loopback = host => host === 'localhost' || host === '127.0.0.1' || host === '::1';
 const hostOf = url => url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
 // Every loopback name and address is one host. An endpoint written
@@ -173,28 +183,34 @@ export async function executeBrowser(config = {}, args = {}, { connect, lookup =
   const report = name => { try { onStep?.(name); } catch { /* telemetry only */ } };
   let settings;
   try {
-    settings = validateConfig(config);
-    if (typeof args.task_id !== 'string' || !/^[A-Za-z0-9_.-]{1,80}$/.test(args.task_id)) throw new Error('A bounded task_id is required');
-    if (!Array.isArray(args.steps) || !args.steps.length || args.steps.length > MAX_STEPS) throw new Error('Browser task requires 1–12 steps');
+    try { settings = validateConfig(config); } catch { throw refuse('configuration_refused', 'Browser configuration refused'); }
+    if (typeof args.task_id !== 'string' || !/^[A-Za-z0-9_.-]{1,80}$/.test(args.task_id)) throw refuse('invalid_task_id', 'A bounded task_id is required');
+    if (!Array.isArray(args.steps) || !args.steps.length || args.steps.length > MAX_STEPS) throw refuse('invalid_steps', 'Browser task requires 1–12 steps');
     // A lone `status` step is a readiness probe: it only checks that the
     // configured control endpoint answers. It opens no context or page and
     // navigates nowhere, so it cannot be combined with any other step.
     const probe = args.steps.length === 1 && args.steps[0]?.operation === 'status';
     if (!probe) for (const step of args.steps) {
-      if (!step || !OPERATIONS.has(step.operation)) throw new Error('Unsupported browser operation');
+      if (!step || !OPERATIONS.has(step.operation)) throw refuse('unsupported_operation', 'Unsupported browser operation');
       if (['click', 'fill'].includes(step.operation)) {
-        if (typeof step.selector !== 'string' || step.selector.length > 256 || sensitive.test(step.selector)
-          || !granted(config, args.task_id, step)) throw new Error('Browser interaction lacks an exact operator grant');
+        if (typeof step.selector !== 'string' || step.selector.length > 256 || sensitive.test(step.selector)) throw refuse('selector_refused', 'Interaction selector refused');
+        // The value is judged on its own, before any grant is consulted, so
+        // which rule refused says nothing about what the private file grants.
         if (step.operation === 'fill' && (typeof step.value !== 'string' || !step.value.length || step.value.length > 1000 || sensitive.test(step.value)))
-          throw new Error('Sensitive, empty or oversized fill refused');
+          throw refuse('fill_value_refused', 'Sensitive, empty or oversized fill refused');
+        if (!granted(config, args.task_id, step)) throw refuse('grant_missing', 'Browser interaction lacks an exact operator grant');
       }
-      if (step.operation === 'screenshot' && config.screenshot_retention !== 'ephemeral') throw new Error('Screenshot requires ephemeral evidence consent');
-      if (step.operation === 'navigate' && typeof step.url !== 'string') throw new Error('Navigation URL required');
+      // `inspect` may name one element to report on; with no selector (absent,
+      // null or empty, as before) it is the page-level observation `snapshot` gives.
+      if (step.operation === 'inspect' && selects(step) && (typeof step.selector !== 'string' || step.selector.length > 256))
+        throw refuse('selector_refused', 'Inspect selector refused');
+      if (step.operation === 'screenshot' && config.screenshot_retention !== 'ephemeral') throw refuse('screenshot_consent_required', 'Screenshot requires ephemeral evidence consent');
+      if (step.operation === 'navigate' && typeof step.url !== 'string') throw refuse('navigation_url_required', 'Navigation URL required');
     }
     const work = async () => {
       // Validate all planned navigations before contacting the browser service.
       for (const step of args.steps) if (step.operation === 'navigate' && !await permittedUrl(step.url, config, settings.origins, lookup))
-        throw new Error('Navigation refused by browser policy');
+        throw refuse('navigation_refused_by_policy', 'Navigation refused by browser policy');
       check();
       // The turn and the proxy are handed to the outer cleanup together: a
       // task that expired while waiting releases both here, in order, so the
@@ -277,12 +293,12 @@ export async function executeBrowser(config = {}, args = {}, { connect, lookup =
         // until the first navigate. `about:blank` is not evidence of anything.
         if (current === 'about:blank') return;
         const landed = new URL(current).origin;
-        if (!settings.origins.has(landed)) throw new Error('Active page origin is not allowlisted');
+        if (!settings.origins.has(landed)) throw refuse('page_origin_not_allowlisted', 'Active page origin is not allowlisted');
         // The proxy may have answered for an allowlisted address too (a refused
         // method or credential, an unreachable server). Its page carries this
         // task's own title, so the document is asked directly: an address
         // comparison alone would miss a fragment or a rewritten history entry.
-        if (egress.wasRefused(current) || await page.title() === egress.refusalTitle) throw new Error('Active page was refused by egress policy');
+        if (egress.wasRefused(current) || await page.title() === egress.refusalTitle) throw refuse('page_refused_by_egress', 'Active page was refused by egress policy');
       };
       for (const step of args.steps) {
         check();
@@ -301,7 +317,7 @@ export async function executeBrowser(config = {}, args = {}, { connect, lookup =
           case 'navigate':
             await page.goto(step.url, { waitUntil: 'domcontentloaded', timeout: settings.timeout });
             // A navigation that committed nothing is not an observed page.
-            if (page.url() === 'about:blank') throw new Error('Navigation did not commit');
+            if (page.url() === 'about:blank') throw refuse('navigation_not_committed', 'Navigation did not commit');
             await requireAllowlisted();
             evidence = { url: safeUrl(page.url()) }; break;
           case 'inspect':
@@ -315,7 +331,48 @@ export async function executeBrowser(config = {}, args = {}, { connect, lookup =
                 .map(el => ({ tag: el.tagName, type: el.getAttribute('type') ?? '', text: String(el.innerText ?? '').slice(0, 100) }))
             }));
             evidence = { url: safeUrl(page.url()), title: redact(observed.title), text: redact(observed.text),
-              elements: observed.elements.slice(0, 50).map(el => ({ tag: redact(el.tag), type: redact(el.type), text: redact(el.text) })) }; break;
+              elements: observed.elements.slice(0, 50).map(el => ({ tag: redact(el.tag), type: redact(el.type), text: redact(el.text) })) };
+            // `inspect` with a selector adds what that one element is and says,
+            // beside the page-level fields above (kept, so a caller that read
+            // them before still can). An element that is not there is reported
+            // as absent: that is an observation, not a failure. The selector is
+            // an argument to fixed code, never code itself.
+            if (step.operation === 'inspect' && selects(step)) {
+              // A selector the engine rejects, or a lost connection, is the
+              // engine's failure and is reported as one, with no rule named.
+              const target = await page.$(step.selector);
+              const found = target ? await target.evaluate(element => {
+                const tag = String(element.tagName ?? '');
+                let type = '';
+                try { type = String(element.getAttribute('type') ?? ''); } catch { type = ''; }
+                // Never a form value, and never page-authored source. A text
+                // control's text is what it holds. An element that is not
+                // rendered answers `innerText` with its raw content, so a
+                // script, style or template (or anything inside one, or the
+                // head) yields nothing, and a container holding one is read
+                // from a copy with those parts and any textarea removed.
+                // Anything this cannot establish yields no text at all.
+                const source = 'script,style,template,noscript,head';
+                let text = '';
+                try {
+                  if (tag !== 'INPUT' && tag !== 'TEXTAREA' && !element.closest(source)) {
+                    if (element.querySelector(source)) {
+                      const copy = element.cloneNode(true);
+                      for (const part of Array.from(copy.querySelectorAll(`${source},textarea`))) part.remove();
+                      text = String(copy.textContent ?? '');
+                    } else text = String(element.innerText ?? '');
+                  }
+                } catch { text = ''; }
+                return { tag, type, text: text.slice(0, 4000) };
+              }) : null;
+              // An element that is there but could not be described is not absent.
+              if (target && (!found || typeof found !== 'object')) throw new Error('Inspect evidence unusable');
+              evidence.selector = redact(step.selector);
+              evidence.element = found
+                ? { found: true, tag: redact(found.tag).slice(0, 32), type: redact(found.type).slice(0, 32), text: redact(found.text) }
+                : { found: false };
+            }
+            break;
           }
           case 'console': evidence = { messages: consoleMessages.slice() }; break;
           case 'network': evidence = { requests: network.slice(), refused: blocked.slice(), egress_refused: egress.refused.slice() }; break;
@@ -325,7 +382,7 @@ export async function executeBrowser(config = {}, args = {}, { connect, lookup =
             evidence = { mime_type: 'image/png', bytes: image.length, base64: image.toString('base64'), retention: 'ephemeral' }; break;
           }
           case 'click': {
-            if (!granted(config, args.task_id, step, new URL(page.url()).origin)) throw new Error('Click grant does not match the active origin');
+            if (!granted(config, args.task_id, step, new URL(page.url()).origin)) throw refuse('grant_origin_mismatch', 'Click grant does not match the active origin');
             await page.click(step.selector);
             await requireAllowlisted();
             evidence = { action: 'clicked' }; break;
@@ -339,9 +396,9 @@ export async function executeBrowser(config = {}, args = {}, { connect, lookup =
             // Only a connected, enabled, editable text control can be written:
             // a non-input, hidden, disabled, readonly, checkbox, radio or file
             // target is refused before anything is cleared or typed.
-            if (!granted(config, args.task_id, step, new URL(page.url()).origin)) throw new Error('Fill grant does not match the active origin');
+            if (!granted(config, args.task_id, step, new URL(page.url()).origin)) throw refuse('grant_origin_mismatch', 'Fill grant does not match the active origin');
             const target = await page.$(step.selector);
-            if (!target) throw new Error('Fill target not found');
+            if (!target) throw refuse('fill_target_not_found', 'Fill target not found');
             const editable = await target.evaluate(element => {
               const attribute = name => { try { return element.getAttribute(name); } catch { return null; } };
               const tag = String(element.tagName ?? '');
@@ -357,7 +414,7 @@ export async function executeBrowser(config = {}, args = {}, { connect, lookup =
               }
               return true;
             });
-            if (editable !== true) throw new Error('Fill target is not an editable text control');
+            if (editable !== true) throw refuse('fill_target_not_editable', 'Fill target is not an editable text control');
             // Keystrokes go to whatever the document has focused, so focus is
             // confirmed before typing: a CSS-hidden input passes the editable
             // check, `focus()` silently fails, and type() would otherwise send
@@ -367,10 +424,10 @@ export async function executeBrowser(config = {}, args = {}, { connect, lookup =
               try { element.select(); } catch { element.value = ''; }
               return document.activeElement === element;
             });
-            if (focused !== true) throw new Error('Fill target could not take focus');
+            if (focused !== true) throw refuse('fill_target_not_focusable', 'Fill target could not take focus');
             await target.type(step.value);
             const applied = await target.evaluate((element, expected) => element.value === expected, step.value);
-            if (applied !== true) throw new Error('Fill did not apply');
+            if (applied !== true) throw refuse('fill_not_applied', 'Fill did not apply');
             evidence = { action: 'filled' }; break;
           }
         }
@@ -399,12 +456,15 @@ export async function executeBrowser(config = {}, args = {}, { connect, lookup =
       : message === 'Browser egress is not verified' ? 'browser_egress_unverified'
       : noProxy ? 'browser_egress_unavailable'
       : unavailable ? 'browser_unavailable' : 'browser_policy_or_execution_error';
+    // The general code stays as it was; a refusal by one of this worker's own
+    // rules also names the rule. Anything upstream threw has no reason at all.
+    const reason = code === 'browser_policy_or_execution_error' && error instanceof Refusal ? error.reason : null;
     // Failed evidence must still disclose effects that may already have
     // happened, so the model can reconcile instead of retrying a
     // non-idempotent step: completed operation names only, never their content.
     return outcome = { status: unavailable || noProxy ? 'unavailable' : 'error',
       executed: false, task_id: /^[A-Za-z0-9_.-]{1,80}$/.test(args.task_id ?? '') ? args.task_id : undefined,
-      verification_status: 'not_verified', error: code,
+      verification_status: 'not_verified', error: code, ...(reason ? { refusal_reason: reason } : {}),
       egress_verified: Boolean(egress?.attested && !egress.bypassed && egress.directRequests === 0),
       effects_possible: effectsPossible, steps_completed: results.length, step_in_flight: stepInFlight,
       operations_completed: results.map(row => row.operation).slice(0, MAX_STEPS),
@@ -426,6 +486,8 @@ export async function executeBrowser(config = {}, args = {}, { connect, lookup =
           steps_completed: Math.max(Number(outcome.steps_completed ?? 0), completed.length),
           operations_completed: Array.from(new Set([...(outcome.operations_completed ?? []), ...completed.map(row => row.operation)])).slice(0, MAX_STEPS),
           results: [] });
+        // The reason named an earlier refusal; this failure is the cleanup's.
+        delete outcome.refusal_reason;
       }
     }
     // Each release is attempted whatever the one before it did: a failed

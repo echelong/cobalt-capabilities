@@ -131,4 +131,27 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(json.loads(ran.stdout)['status'], 'disabled')
 
 
+    def test_the_refusal_reason_lists_agree(self):
+        # Three places name a refusal's rule: the memory adapter, the browser
+        # worker and the host's receipt filter. A name missing from the filter
+        # would be dropped from receipts without a word; one only in the filter
+        # is a name nothing can send. The README table lists the same names.
+        import re
+        root = Path(__file__).parents[2]
+        adapter = importlib.util.spec_from_file_location('hindsight', root / 'capabilities' / 'hindsight.py')
+        hindsight = importlib.util.module_from_spec(adapter)
+        adapter.loader.exec_module(hindsight)
+        memory = set(hindsight._REFUSAL_REASONS.values()) | {'not_found'}
+        browser = set(re.findall(r"refuse\('([a-z_]+)'", (root / 'capabilities' / 'browser.mjs').read_text()))
+        listed = re.search(r'^const REASON = /\^\(([a-z_|]+)\)\$/$', (root / 'hooks' / 'state.ts').read_text(), re.M)
+        self.assertIsNotNone(listed)
+        receipts = listed.group(1).split('|')
+        self.assertEqual(len(receipts), len(set(receipts)))
+        self.assertGreater(len(browser), 10)
+        self.assertEqual(set(receipts), memory | browser)
+        readme = (root / 'README.md').read_text()
+        for name in memory | browser:
+            self.assertIn(f'`{name}`', readme)
+
+
 if __name__ == '__main__': unittest.main()
