@@ -15,8 +15,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # The Cobalt Cockpit release the cross-plugin tests run against.
-  COCKPIT_REF: v0.4.0
+  # The Cobalt Cockpit release the cross-plugin tests run against: 0.4.0, the
+  # compatibility baseline, pinned by commit so it does not depend on a tag.
+  COCKPIT_REF: c736bee361173a05622ccf8acc6d78b425386ab4
 
 jobs:
   adapters:

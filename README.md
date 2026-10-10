@@ -398,7 +398,9 @@ bash capabilities/tests/test-services.sh   # optional harness; Linux with pasta 
 
 # The host-hook tests run this plugin's hooks together with Cockpit's own, in
 # both load orders, so they need a checkout of Cockpit beside them:
-git clone --depth 1 --branch v0.4.0 https://github.com/echelong/cobalt-cockpit .cockpit
+# (Cockpit 0.4.0, the baseline these tests are pinned to, by commit):
+git clone https://github.com/echelong/cobalt-cockpit .cockpit
+git -C .cockpit checkout c736bee361173a05622ccf8acc6d78b425386ab4
 claude plugin test .
 ```
 
